@@ -1,11 +1,14 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var scanner = NetworkScanner()
+    @ObservedObject var scanner: NetworkScanner
     @State private var search = ""
     @State private var renameTarget: Device?
     @State private var renameText = ""
     @State private var showUnnamedOnly = false
+    @State private var sortOrder = [KeyPathComparator(\Device.ipSortKey)]
+    @AppStorage("AutoRescanEnabled") private var autoRescan = false
+    @AppStorage("AutoRescanInterval") private var autoInterval = 5   // Minuten
 
     private var filtered: [Device] {
         scanner.devices.filter { d in
@@ -17,6 +20,7 @@ struct ContentView: View {
                 || d.mac.contains(q)
                 || (d.vendor?.lowercased().contains(q) ?? false)
         }
+        .sorted(using: sortOrder)
     }
 
     var body: some View {
@@ -29,6 +33,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 640, minHeight: 420)
         .task {
+            scanner.setAutoRescan(enabled: autoRescan, intervalMinutes: autoInterval)
             await scanner.scan()
             // Hersteller-DB im Hintergrund aktualisieren (offline einfach übersprungen).
             if await OUIUpdater.updateIfNeeded() {
@@ -62,6 +67,30 @@ struct ContentView: View {
             }
             .toggleStyle(.checkbox)
 
+            Toggle(isOn: $autoRescan) {
+                Text("Auto-Scan")
+            }
+            .toggleStyle(.checkbox)
+            .help("Scannt periodisch und meldet neue Geräte per Benachrichtigung")
+            .onChange(of: autoRescan) { _, on in
+                if on { NewDeviceNotifier.requestAuthorization() }
+                scanner.setAutoRescan(enabled: on, intervalMinutes: autoInterval)
+            }
+
+            if autoRescan {
+                Picker("", selection: $autoInterval) {
+                    Text("alle 1 min").tag(1)
+                    Text("alle 5 min").tag(5)
+                    Text("alle 15 min").tag(15)
+                    Text("alle 30 min").tag(30)
+                }
+                .labelsHidden()
+                .frame(width: 110)
+                .onChange(of: autoInterval) { _, minutes in
+                    scanner.setAutoRescan(enabled: true, intervalMinutes: minutes)
+                }
+            }
+
             Spacer()
 
             TextField("Suchen", text: $search)
@@ -75,16 +104,16 @@ struct ContentView: View {
     // MARK: - Tabelle
 
     private var table: some View {
-        Table(filtered) {
-            TableColumn("") { d in
+        Table(filtered, sortOrder: $sortOrder) {
+            TableColumn("", value: \.onlineSortKey) { d in
                 Circle()
                     .fill(d.isOnline ? Color.green : Color.secondary.opacity(0.4))
                     .frame(width: 9, height: 9)
-                    .help(d.isOnline ? "Online" : "Zuletzt gesehen (offline)")
+                    .help(statusHelp(d))
             }
             .width(20)
 
-            TableColumn("Name") { d in
+            TableColumn("Name", value: \.displayName) { d in
                 HStack(spacing: 7) {
                     Image(systemName: d.category.symbol)
                         .foregroundStyle(d.category.tint)
@@ -97,17 +126,17 @@ struct ContentView: View {
             }
             .width(min: 160, ideal: 220)
 
-            TableColumn("IP-Adresse") { d in
+            TableColumn("IP-Adresse", value: \.ipSortKey) { d in
                 Text(d.ip).monospaced()
             }
             .width(min: 110, ideal: 130)
 
-            TableColumn("MAC-Adresse") { d in
+            TableColumn("MAC-Adresse", value: \.mac) { d in
                 Text(d.mac).monospaced().foregroundStyle(.secondary)
             }
             .width(min: 130, ideal: 150)
 
-            TableColumn("Hersteller") { d in
+            TableColumn("Hersteller", value: \.vendorSortKey) { d in
                 Text(d.vendor ?? "—").foregroundStyle(.secondary)
             }
             .width(min: 100, ideal: 140)
@@ -146,10 +175,14 @@ struct ContentView: View {
                         }
                     }
                 }
+                if let url = d.webURL {
+                    Button("Im Browser öffnen") { NSWorkspace.shared.open(url) }
+                }
                 Button("IP kopieren") { copy(d.ip) }
                 Button("MAC kopieren") { copy(d.mac) }
                 if !d.isOnline {
                     Divider()
+                    Button("Aufwecken (Wake-on-LAN)") { scanner.wake(d) }
                     Button("Aus Liste entfernen", role: .destructive) { scanner.forget(d) }
                 }
             }
@@ -189,6 +222,11 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.ip).monospaced().foregroundStyle(.secondary)
                 Text(device.mac).monospaced().font(.caption).foregroundStyle(.secondary)
+                if !current.services.isEmpty {
+                    Text("Dienste: \(current.services.sorted().joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             TextField("Gerätename", text: $renameText)
                 .textFieldStyle(.roundedBorder)
@@ -242,6 +280,19 @@ struct ContentView: View {
     }
 
     // MARK: - Aktionen
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.locale = Locale(identifier: "de")
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private func statusHelp(_ d: Device) -> String {
+        if d.isOnline { return "Online" }
+        guard let seen = d.lastSeen else { return "Offline" }
+        return "Offline – zuletzt gesehen \(Self.relativeFormatter.localizedString(for: seen, relativeTo: .now))"
+    }
 
     private func beginRename(_ d: Device) {
         renameText = d.customName ?? d.hostname ?? ""

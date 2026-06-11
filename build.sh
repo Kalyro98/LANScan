@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 APP_NAME="LANScan"
 BUNDLE_ID="ch.kalyro.lanscan"
-VERSION="1.0"
+VERSION="1.1"
 BUILD_DIR=".build/release"
 APP_DIR="dist/${APP_NAME}.app"
 DMG_PATH="dist/${APP_NAME}-${VERSION}.dmg"
@@ -49,7 +49,19 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>NSLocalNetworkUsageDescription</key>
     <string>LANScan durchsucht dein lokales Netzwerk nach verbundenen Geräten.</string>
     <key>NSBonjourServices</key>
-    <array><string>_services._dns-sd._udp</string></array>
+    <array>
+        <string>_services._dns-sd._udp</string>
+        <string>_http._tcp</string>
+        <string>_https._tcp</string>
+        <string>_ssh._tcp</string>
+        <string>_smb._tcp</string>
+        <string>_ipp._tcp</string>
+        <string>_airplay._tcp</string>
+        <string>_raop._tcp</string>
+        <string>_hap._tcp</string>
+        <string>_googlecast._tcp</string>
+        <string>_spotify-connect._tcp</string>
+    </array>
 </dict>
 </plist>
 PLIST

@@ -22,9 +22,10 @@ vom User umbenannt werden; die Namen bleiben persistent (gemappt auf die MAC).
 - Installation: DMG öffnen → App nach „Programme" ziehen
 
 ## Aktueller Stand
-v1.0 fertig & getestet: findet im Heimnetz (192.168.1.0/24) 26 Geräte.
-GUI mit Tabelle, Live-Fortschritt, Suche, „nur unbenannte"-Filter, Umbenennen
-per Stift/Doppelklick/Kontextmenü, IP/MAC kopieren, Offline-Geräte als grau markiert.
+v1.1: alle v1.0-Features plus sortierbare Spalten, ⌘R-Rescan, persistente
+Geräteliste mit „zuletzt gesehen", Auto-Rescan mit Benachrichtigung bei neuen
+Geräten, Bonjour-Discovery (Namen + Dienste), „Im Browser öffnen" und Wake-on-LAN.
+v1.0 fand im Heimnetz (192.168.1.0/24) 26 Geräte; v1.1 manuell zu verifizieren.
 
 ## Konventionen & Invarianten
 - **Geräte-Identität = IP-Adresse** (`Device.id = ip`). Grund: mehrere IPs können
@@ -61,4 +62,25 @@ per Stift/Doppelklick/Kontextmenü, IP/MAC kopieren, Offline-Geräte als grau ma
   - Manuell erzwingen: `defaults delete ch.kalyro.lanscan OUILastUpdate` + Neustart.
 - Zufalls-MACs (locally administered, 2. Nibble ∈ {2,6,A,E}) → „Private Adresse".
 - Broadcast/Multicast (ff:ff…, 01:00:5e, 33:33, .255, 224.0.0.0/4) werden aus den
-  ARP-Ergebnissen gefiltert.
+  ARP-Ergebnissen gefiltert; `readARP` nimmt nur Zeilen des aktiven Interfaces.
+- **Geräte-Persistenz** (`DeviceStore`, `devices.json`): speichert ip/mac/hostname/
+  vendor/lastSeen nach jedem Scan; beim Start wird die Liste als offline geladen
+  (Vendor wird gegen die aktuelle OUI-DB neu aufgelöst). Custom-Namen/Symbole bleiben
+  ausschließlich im `NameStore` — keine Doppelhaltung.
+- **Auto-Rescan**: `@AppStorage` `AutoRescanEnabled`/`AutoRescanInterval` (Minuten),
+  Task-Schleife in `NetworkScanner.setAutoRescan`. Benachrichtigungen
+  (`NewDeviceNotifier`) nur bei Scans **mit** Historie (sonst würde der allererste
+  Scan 26× feuern); Guard `Bundle.main.bundleIdentifier != nil`, weil
+  `UNUserNotificationCenter` bei `swift run` (kein Bundle) crasht.
+- **Bonjour** (`BonjourDiscovery`): browst eine feste Typenliste ~3 s parallel zum
+  Ping-Sweep; Endpoint→IP-Auflösung per kurzem TCP-Connect. Die Typenliste
+  (`BonjourDiscovery.serviceTypes`) muss mit `NSBonjourServices` in `build.sh`
+  **synchron** bleiben (macOS Local Network Privacy). Bonjour-Name ist nur Fallback,
+  Reverse-DNS gewinnt.
+- **„Im Browser öffnen"**: `Device.webURL` — Bonjour-annoncierter `_http`/`_https`-Port
+  schlägt den parallelen TCP-Probe auf 80/443 (0,7 s Timeout).
+- **Wake-on-LAN** (`WakeOnLAN`): Magic Packet an Subnetz-Broadcast (/24-Annahme aus
+  der Geräte-IP) und 255.255.255.255, UDP Port 9; nur für Offline-Geräte im Kontextmenü.
+- `Once` (in `BonjourDiscovery.swift`): geteilter Guard, damit Continuations bei
+  Ergebnis/Timeout-Rennen genau einmal resumen (genutzt von Reverse-DNS, TCP-Probe,
+  Bonjour-Auflösung).

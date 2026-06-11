@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Network
 
 @MainActor
 final class NetworkScanner: ObservableObject {
@@ -9,12 +10,32 @@ final class NetworkScanner: ObservableObject {
     @Published var statusText = "Bereit"
     @Published var subnetText = ""
 
+    init() {
+        // Bekannte Geräte aus dem letzten Lauf sofort (offline) anzeigen.
+        devices = DeviceStore.shared.load().map { rec in
+            var d = Device(mac: rec.mac, ip: rec.ip)
+            d.hostname = rec.hostname
+            d.vendor = OUIDatabase.vendor(for: rec.mac) ?? rec.vendor
+            d.customName = NameStore.shared.name(forMac: rec.mac, ip: rec.ip)
+            d.customCategory = NameStore.shared.category(forMac: rec.mac, ip: rec.ip)
+            d.autoCategory = DeviceCategory.guess(vendor: d.vendor, hostname: d.hostname)
+            d.isOnline = false
+            d.lastSeen = rec.lastSeen
+            return d
+        }
+        .sorted { $0.ipSortKey < $1.ipSortKey }
+    }
+
     /// Startet einen vollständigen Scan des aktuellen Subnetzes.
     func scan() async {
         guard !isScanning else { return }
         isScanning = true
         progress = 0
         statusText = "Netzwerk wird ermittelt…"
+
+        // Für die „Neues Gerät"-Erkennung: Stand vor diesem Scan.
+        let knownIPs = Set(devices.map(\.ip))
+        let hadHistory = !devices.isEmpty
 
         guard let info = Self.currentSubnet() else {
             statusText = "Kein aktives Netzwerk gefunden"
@@ -23,10 +44,13 @@ final class NetworkScanner: ObservableObject {
         }
         subnetText = "\(info.network)/\(info.prefix) · \(info.interface)"
 
-        // 1) Ping-Sweep über alle Host-IPs (füllt den ARP-Cache).
+        // 1) Ping-Sweep über alle Host-IPs (füllt den ARP-Cache);
+        //    parallel dazu Bonjour-Dienste browsen.
+        async let bonjourDiscovery = BonjourDiscovery.discover(duration: 3.0)
         let hosts = info.hostAddresses
         statusText = "Scanne \(hosts.count) Adressen…"
         await pingSweep(hosts)
+        let bonjour = await bonjourDiscovery
 
         // 2) ARP-Tabelle auslesen → IP/MAC-Paare.
         statusText = "Lese ARP-Tabelle…"
@@ -39,14 +63,31 @@ final class NetworkScanner: ObservableObject {
             d.customName = NameStore.shared.name(forMac: entry.mac, ip: entry.ip)
             d.customCategory = NameStore.shared.category(forMac: entry.mac, ip: entry.ip)
             d.isOnline = true
+            d.lastSeen = Date()
             return d
         }
 
-        // 4) Reverse-DNS / mDNS für Hostnamen (parallel).
+        // 4) Reverse-DNS / mDNS für Hostnamen (parallel) + Web-Oberflächen-Probe.
         statusText = "Löse Hostnamen auf…"
-        let names = await Self.resolveHostnames(found.map { $0.ip })
+        let foundIPs = found.map { $0.ip }
+        async let webProbe = Self.probeWebUIs(foundIPs)
+        let names = await Self.resolveHostnames(foundIPs)
+        let webURLs = await webProbe
         for i in found.indices {
-            if let n = names[found[i].ip] { found[i].hostname = n }
+            let ip = found[i].ip
+            if let n = names[ip] { found[i].hostname = n }
+            let bj = bonjour[ip]
+            // Bonjour-Name als Fallback, wenn Reverse-DNS nichts lieferte.
+            if found[i].hostname == nil, let bn = bj?.name { found[i].hostname = bn }
+            found[i].services = bj?.services ?? []
+            // Web-UI: Bonjour-annoncierter Port schlägt den 80/443-Probe.
+            if let p = bj?.httpPort {
+                found[i].webURL = URL(string: p == 80 ? "http://\(ip)" : "http://\(ip):\(p)")
+            } else if let p = bj?.httpsPort {
+                found[i].webURL = URL(string: p == 443 ? "https://\(ip)" : "https://\(ip):\(p)")
+            } else {
+                found[i].webURL = webURLs[ip]
+            }
             found[i].autoCategory = DeviceCategory.guess(vendor: found[i].vendor,
                                                          hostname: found[i].hostname)
         }
@@ -58,10 +99,34 @@ final class NetworkScanner: ObservableObject {
         for d in found { merged[d.ip] = d }
 
         devices = merged.values.sorted { $0.ipSortKey < $1.ipSortKey }
+        DeviceStore.shared.save(devices)
+
+        // Beim allerersten Scan (keine Historie) nicht für jedes Gerät benachrichtigen.
+        if hadHistory {
+            NewDeviceNotifier.notify(about: found.filter { !knownIPs.contains($0.ip) })
+        }
         progress = 1
         let online = devices.filter { $0.isOnline }.count
         statusText = "\(online) Gerät\(online == 1 ? "" : "e") online"
         isScanning = false
+    }
+
+    // MARK: - Auto-Rescan
+
+    private var autoTask: Task<Void, Never>?
+
+    /// (De-)Aktiviert den periodischen Hintergrund-Scan.
+    func setAutoRescan(enabled: Bool, intervalMinutes: Int) {
+        autoTask?.cancel()
+        autoTask = nil
+        guard enabled, intervalMinutes > 0 else { return }
+        autoTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double(intervalMinutes) * 60))
+                guard !Task.isCancelled, let self else { return }
+                if !self.isScanning { await self.scan() }
+            }
+        }
     }
 
     /// Setzt/ändert den benutzerdefinierten Namen eines Geräts (persistent).
@@ -70,7 +135,9 @@ final class NetworkScanner: ObservableObject {
         NameStore.shared.setName(name, forMac: device.mac, ip: device.ip,
                                  macHasMultipleIPs: macShared)
         if let idx = devices.firstIndex(where: { $0.id == device.id }) {
-            devices[idx].customName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Leer/Whitespace → nil, sonst bleibt ein ""-Name zurück (fett dargestellt).
+            let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            devices[idx].customName = (trimmed?.isEmpty ?? true) ? nil : trimmed
         }
     }
 
@@ -98,6 +165,71 @@ final class NetworkScanner: ObservableObject {
         devices.removeAll { $0.id == device.id && !$0.isOnline }
         if let idx = devices.firstIndex(where: { $0.id == device.id }) {
             devices[idx].customName = nil
+            devices[idx].customCategory = nil
+        }
+        DeviceStore.shared.save(devices)
+    }
+
+    /// Schickt ein Wake-on-LAN Magic Packet an ein (offline) Gerät.
+    func wake(_ device: Device) {
+        var targets = ["255.255.255.255"]
+        var parts = device.ip.split(separator: ".").map(String.init)
+        if parts.count == 4 {
+            parts[3] = "255"
+            targets.append(parts.joined(separator: "."))   // Subnetz-Broadcast (/24-Annahme)
+        }
+        var ok = false
+        for t in targets where WakeOnLAN.wake(mac: device.mac, broadcast: t) { ok = true }
+        statusText = ok
+            ? "Wake-on-LAN an \(device.displayName) gesendet"
+            : "Wake-on-LAN fehlgeschlagen"
+    }
+
+    // MARK: - Web-Oberflächen-Probe
+
+    /// Prüft parallel, welche Geräte auf Port 80/443 antworten → "Im Browser öffnen".
+    nonisolated private static func probeWebUIs(_ ips: [String]) async -> [String: URL] {
+        await withTaskGroup(of: (String, URL?).self) { group in
+            for ip in ips {
+                group.addTask {
+                    if await tcpOpen(ip, 80) { return (ip, URL(string: "http://\(ip)")) }
+                    if await tcpOpen(ip, 443) { return (ip, URL(string: "https://\(ip)")) }
+                    return (ip, nil)
+                }
+            }
+            var map: [String: URL] = [:]
+            for await (ip, url) in group {
+                if let url { map[ip] = url }
+            }
+            return map
+        }
+    }
+
+    nonisolated private static func tcpOpen(_ ip: String, _ port: UInt16,
+                                            timeout: TimeInterval = 0.7) async -> Bool {
+        guard let addr = IPv4Address(ip), let nwPort = NWEndpoint.Port(rawValue: port) else {
+            return false
+        }
+        return await withCheckedContinuation { cont in
+            let conn = NWConnection(host: .ipv4(addr), port: nwPort, using: .tcp)
+            let once = Once()
+            let finish: (Bool) -> Void = { open in
+                if once.claim() {
+                    conn.cancel()
+                    cont.resume(returning: open)
+                }
+            }
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(true)
+                case .failed, .cancelled: finish(false)
+                default: break
+                }
+            }
+            conn.start(queue: .global(qos: .utility))
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                finish(false)
+            }
         }
     }
 
@@ -159,7 +291,10 @@ final class NetworkScanner: ObservableObject {
 
             guard let atRange = s.range(of: ") at ") else { continue }
             let after = s[atRange.upperBound...]
-            let macRaw = after.split(separator: " ").first.map(String.init) ?? ""
+            let tokens = after.split(separator: " ")
+            // Nur Einträge des aktiven Interfaces ("… at <mac> on <iface> …").
+            guard tokens.count >= 3, tokens[1] == "on", tokens[2] == interface else { continue }
+            let macRaw = String(tokens[0])
             if macRaw.contains("incomplete") || macRaw.isEmpty { continue }
             guard let mac = normalizeMAC(macRaw) else { continue }
             if isMulticastOrBroadcast(ip: ip, mac: mac) { continue }
@@ -199,7 +334,7 @@ final class NetworkScanner: ObservableObject {
     nonisolated private static func resolveHostnames(_ ips: [String]) async -> [String: String] {
         await withTaskGroup(of: (String, String?).self) { group in
             for ip in ips {
-                group.addTask { (ip, reverseLookup(ip)) }
+                group.addTask { (ip, await reverseLookup(ip, timeout: 2.5)) }
             }
             var map: [String: String] = [:]
             for await (ip, name) in group {
@@ -209,7 +344,23 @@ final class NetworkScanner: ObservableObject {
         }
     }
 
-    nonisolated private static func reverseLookup(_ ip: String) -> String? {
+    /// Verlagert das blockierende getnameinfo auf eine GCD-Queue und begrenzt die
+    /// Wartezeit – nicht antwortende DNS-Server würden sonst das Scan-Ende einfrieren.
+    /// Ein hängender Lookup läuft im Hintergrund aus; resumed wird genau einmal.
+    nonisolated private static func reverseLookup(_ ip: String, timeout: TimeInterval) async -> String? {
+        await withCheckedContinuation { cont in
+            let once = Once()
+            DispatchQueue.global(qos: .utility).async {
+                let name = blockingReverseLookup(ip)
+                if once.claim() { cont.resume(returning: name) }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                if once.claim() { cont.resume(returning: nil) }
+            }
+        }
+    }
+
+    nonisolated private static func blockingReverseLookup(_ ip: String) -> String? {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)

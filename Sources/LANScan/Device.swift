@@ -13,6 +13,9 @@ struct Device: Identifiable, Hashable {
     var autoCategory: DeviceCategory = .unknown   // automatisch geraten
     var customCategory: DeviceCategory?           // vom User gewählt (überschreibt)
     var isOnline: Bool = true
+    var lastSeen: Date?             // letzter Scan, bei dem das Gerät online war
+    var services: Set<String> = []  // via Bonjour annoncierte Dienste ("http", "ssh", …)
+    var webURL: URL?                // erreichbare Web-Oberfläche (Bonjour-Port oder 80/443)
 
     /// Tatsächlich angezeigte Kategorie: manuelle Wahl > automatische Erkennung.
     var category: DeviceCategory { customCategory ?? autoCategory }
@@ -29,6 +32,10 @@ struct Device: Identifiable, Hashable {
     var isUnnamed: Bool {
         (customName?.isEmpty ?? true) && (hostname?.isEmpty ?? true)
     }
+
+    /// Sortierschlüssel für die Spaltensortierung (Optionals/Bool sind nicht Comparable).
+    var vendorSortKey: String { vendor ?? "" }
+    var onlineSortKey: Int { isOnline ? 0 : 1 }
 
     /// Sortierschlüssel: IP numerisch korrekt (192.168.1.9 vor .10).
     var ipSortKey: UInt32 {
