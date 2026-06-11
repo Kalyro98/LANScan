@@ -80,7 +80,9 @@ v1.0 fand im Heimnetz (192.168.1.0/24) 26 Geräte; v1.1 manuell zu verifizieren.
 - **„Im Browser öffnen"**: `Device.webURL` — Bonjour-annoncierter `_http`/`_https`-Port
   schlägt den parallelen TCP-Probe auf 80/443 (0,7 s Timeout).
 - **Wake-on-LAN** (`WakeOnLAN`): Magic Packet an Subnetz-Broadcast (/24-Annahme aus
-  der Geräte-IP) und 255.255.255.255, UDP Port 9; nur für Offline-Geräte im Kontextmenü.
+  der Geräte-IP) und 255.255.255.255, UDP Port 9. Kontextmenü-Eintrag für **alle**
+  Geräte (nicht nur offline) — der Online-Status kann bis zum nächsten Scan veraltet
+  sein, und ein Magic Packet an ein laufendes Gerät ist harmlos.
 - `Once` (in `BonjourDiscovery.swift`): geteilter Guard, damit Continuations bei
   Ergebnis/Timeout-Rennen genau einmal resumen (genutzt von Reverse-DNS, TCP-Probe,
   Bonjour-Auflösung).

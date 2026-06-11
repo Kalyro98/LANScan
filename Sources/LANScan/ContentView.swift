@@ -180,9 +180,9 @@ struct ContentView: View {
                 }
                 Button("IP kopieren") { copy(d.ip) }
                 Button("MAC kopieren") { copy(d.mac) }
+                Divider()
+                Button("Aufwecken (Wake-on-LAN)") { scanner.wake(d) }
                 if !d.isOnline {
-                    Divider()
-                    Button("Aufwecken (Wake-on-LAN)") { scanner.wake(d) }
                     Button("Aus Liste entfernen", role: .destructive) { scanner.forget(d) }
                 }
             }
