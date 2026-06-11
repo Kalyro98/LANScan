@@ -15,6 +15,14 @@ vom User umbenannt werden; die Namen bleiben persistent (gemappt auf die MAC).
 ## Pfad
 `/Users/dino/Desktop/Claude/Homelab/LANScan`
 
+## Veröffentlichung
+- **Öffentliches Repo:** https://github.com/Kalyro98/LANScan (eigenes Standalone-Repo,
+  per subtree split aus dem privaten homelab-Repo ausgelagert; dort jetzt ignoriert)
+- **Release-Prozess:** `./build.sh` → DMG aus `dist/` als **`LANScan.dmg`** (exakt dieser
+  Name!) ans Release anhängen — der README-Link zeigt auf `releases/latest/download/LANScan.dmg`.
+  Mit gh CLI: `~/.local/bin/gh release create v<X.Y> <dmg> --title "LANScan <X.Y>" --notes "…"`
+- Bei neuer Version: `VERSION` in `build.sh` bumpen + Git-Tag im Release.
+
 ## Bauen / Ausführen
 - `swift build` — schneller Debug-Build
 - `./build.sh` — Release-Build → `dist/LANScan.app` + `dist/LANScan-1.0.dmg`
