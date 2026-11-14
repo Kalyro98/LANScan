@@ -13,7 +13,7 @@ vom User umbenannt werden; die Namen bleiben persistent (gemappt auf die MAC).
 - Persistenz: `~/Library/Application Support/LANScan/names.json` (MAC → Name)
 
 ## Pfad
-`/Users/dino/Desktop/Claude/Homelab/LANScan`
+`/Users/dino/Claude/Homelab/LANScan`
 
 ## Veröffentlichung
 - **Öffentliches Repo:** https://github.com/Kalyro98/LANScan (eigenes Standalone-Repo,
